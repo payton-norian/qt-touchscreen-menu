@@ -29,7 +29,27 @@ class MainMenu(QWidget):
         self.current_category = "All"
         self.applications = []
 
-        # 1. Настройки окна для Xorg + Тачскрин (из рабочего прототипа)
+        # 1. Адаптивный расчет геометрии под текущий экран
+        desktop = QApplication.desktop()
+        current_screen = desktop.screenNumber(desktop.cursor().pos())
+        screen_geometry = desktop.screenGeometry(current_screen)
+        
+        screen_width = screen_geometry.width()
+        screen_height = screen_geometry.height()
+
+        # Окно занимает 80% ширины и 80% высоты экрана
+        window_width = int(screen_width * 0.80)
+        window_height = int(screen_height * 0.80)
+
+        # Вычисляем ширину зоны приложений (минус 200px боковой панели и ~50px на отступы)
+        app_area_width = window_width - 250
+        # Высота рабочих областей (минус заголовок и margins)
+        workspace_height = window_height - 70
+
+        # Динамический расчет колонок под доступную ширину
+        self.max_columns = max(2, app_area_width // 122)
+
+        # 2. Настройки окна для Xorg + Тачскрин
         self.setWindowFlags(
             Qt.Popup |
             Qt.X11BypassWindowManagerHint |
@@ -38,7 +58,7 @@ class MainMenu(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setFocusPolicy(Qt.StrongFocus)
 
-        # 2. Стилизация через QSS (адаптированная под категории)
+        # 3. Стилизация через QSS
         self.setStyleSheet("""
             QWidget#MainWindow {
                 background-color: rgba(0, 0, 0, 0.85);
@@ -110,16 +130,16 @@ class MainMenu(QWidget):
         # --- ЛЕВАЯ ПАНЕЛЬ (КАТЕГОРИИ) ---
         self.category_list = QListWidget()
         self.category_list.setFixedWidth(200)
-        self.category_list.setFixedHeight(520) # Синхронизируем высоту с областью приложений
+        self.category_list.setFixedHeight(workspace_height) 
         self.category_list.setVerticalScrollMode(QListWidget.ScrollPerPixel)
-        self.category_list.setFocusPolicy(Qt.NoFocus) # Чтобы фокус не залипал на категориях
+        self.category_list.setFocusPolicy(Qt.NoFocus) 
         self.category_list.itemClicked.connect(self.on_category_selected)
         workspace_layout.addWidget(self.category_list)
 
         # --- ПРАВАЯ ПАНЕЛЬ (ПРИЛОЖЕНИЯ) ---
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setFixedSize(800, 520) # Уменьшили ширину с 1000 до 800, резервируя место под список
+        scroll.setFixedSize(app_area_width, workspace_height) 
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         workspace_layout.addWidget(scroll)
@@ -132,28 +152,15 @@ class MainMenu(QWidget):
         self.grid_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         scroll.setWidget(grid_widget)
 
-        # Настройка жестов (Оба виджета получают корректные обработчики)
-        QScroller.grabGesture(self.category_list.viewport(), QScroller.LeftMouseButtonGesture)
-        QScroller.grabGesture(scroll.viewport(), QScroller.LeftMouseButtonGesture)
-
-        # Настройка физики (Делаем скролл отзывчивым и плавным)
-        scroller_props = QScrollerProperties()
-        scroller_props.setScrollMetric(QScrollerProperties.DragStartDistance, 10)
-        scroller_props.setScrollMetric(QScrollerProperties.DecelerationFactor, 0.15)
-        
-        # ЭТОТ БЛОК СТАВИМ ВЗАМЕН:
-        # Настройка жестов (вешаем прямо на сами виджеты, убирая .viewport())
+        # Настройка кинетического скроллинга пальцем
         QScroller.grabGesture(self.category_list, QScroller.LeftMouseButtonGesture)
         QScroller.grabGesture(scroll, QScroller.LeftMouseButtonGesture)
 
-        # Вытаскиваем скроллеры для настройки чувствительности
+        # Вытаскиваем скроллеры для точной настройки физики
         category_scroller = QScroller.scroller(self.category_list)
         app_scroller = QScroller.scroller(scroll)
 
-        # Повышаем чувствительность под Xorg
         scroller_props = QScrollerProperties()
-        # Длина сдвига до активации скролла (в пикселях). 
-        # Делаем её маленькой (6 пикселей), чтобы скролл схватывался мгновенно
         scroller_props.setScrollMetric(QScrollerProperties.DragStartDistance, 6)
         scroller_props.setScrollMetric(QScrollerProperties.DecelerationFactor, 0.12)
         scroller_props.setScrollMetric(QScrollerProperties.MaximumVelocity, 1.2)
@@ -161,8 +168,7 @@ class MainMenu(QWidget):
         category_scroller.setScrollerProperties(scroller_props)
         app_scroller.setScrollerProperties(scroller_props)
 
-
-        # Компоновка самого окна
+        # Компоновка окна
         window_layout = QVBoxLayout(self)
         window_layout.setContentsMargins(0, 0, 0, 0)
         window_layout.addWidget(self.main_widget)
@@ -170,24 +176,36 @@ class MainMenu(QWidget):
         # Загрузка данных
         self.load_applications_and_categories()
 
-        # Центрирование
-        self.adjustSize()
-        self.center_on_screen()
+        # Применение адаптивных размеров и центрирование
+        self.resize(window_width, window_height)
+        self.center_on_screen(screen_geometry)
 
     def load_applications_and_categories(self):
-        # Чтение всех приложений
-        apps = [app for app in Gio.AppInfo.get_all() if app.should_show()]
-        apps.sort(key=lambda a: a.get_display_name().lower())
-        self.applications = apps
+        raw_apps = [app for app in Gio.AppInfo.get_all() if app.should_show()]
+        
+        # Интегрируем очистку от системного мусора
+        for app in raw_apps:
+            app_categories = app.get_categories() or ""
+            cats = [c.strip() for c in app_categories.split(";") if c.strip()]
 
-        # Извлечение уникальных категорий
+            if "Screensaver" in cats or "X-GNOME-Screensaver" in cats:
+                continue
+            if hasattr(app, "get_id") and app.get_id() and "app-install" in app.get_id():
+                continue
+            if hasattr(app, "get_filename") and app.get_filename() and "app-install" in app.get_filename():
+                continue
+
+            self.applications.append(app)
+
+        self.applications.sort(key=lambda a: a.get_display_name().lower())
+
+        # Сбор уникальных категорий
         unique_categories = set()
-        for app in apps:
+        for app in self.applications:
             if hasattr(app, "get_categories") and app.get_categories():
                 cats = [c.strip() for c in app.get_categories().split(";") if c.strip()]
                 unique_categories.update(cats)
 
-        # Добавляем дефолтную категорию "Все"
         self.add_category_row("Все", "All")
 
         category_mapping = {
@@ -235,10 +253,7 @@ class MainMenu(QWidget):
             if widget is not None:
                 widget.deleteLater()
 
-        # Заполнение отфильтрованными приложениями
-        max_columns = 6  # Уменьшили до 6, так как экран стал чуть уже из-за боковой панели
         filtered_apps = []
-        
         for app in self.applications:
             if self.current_category == "All":
                 filtered_apps.append(app)
@@ -248,16 +263,19 @@ class MainMenu(QWidget):
                     if self.current_category in cats:
                         filtered_apps.append(app)
 
+        # Вывод отфильтрованных приложений с адаптивным шагом колонок
         for index, app in enumerate(filtered_apps):
             button = self.create_button(app)
-            row = index // max_columns
-            col = index % max_columns
+            row = index // self.max_columns
+            col = index % self.max_columns
             self.grid_layout.addWidget(button, row, col)
 
     def create_button(self, app):
         button = QToolButton()
         button.setFixedSize(110, 90)
         button.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+
+
         button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         
         display_name = app.get_display_name()
@@ -285,10 +303,9 @@ class MainMenu(QWidget):
             print(f"Не удалось запустить приложение: {error}")
         self.close()
 
-    def center_on_screen(self):
+    def center_on_screen(self, screen_geometry):
         frame_gm = self.frameGeometry()
-        screen = QApplication.desktop().screenNumber(QApplication.desktop().cursor().pos())
-        center_point = QApplication.desktop().screenGeometry(screen).center()
+        center_point = screen_geometry.center()
         frame_gm.moveCenter(center_point)
         self.move(frame_gm.topLeft())
 
@@ -299,44 +316,14 @@ class MainMenu(QWidget):
         self.setFocus()
 
     def keyPressEvent(self, event: QKeyEvent):
-        # 1. Проверяем, нажата ли именно клавиша Escape
         if event.key() == Qt.Key_Escape:
-            self.close()    # Закрываем наше меню
-            event.accept()  # Говорим системе: "Мы обработали это событие, дальше его передавать не нужно"
+            self.close()
+            event.accept()
         else:
-            # 2. Если нажата любая другая клавиша, передаем её стандартному обработчику Qt
             super().keyPressEvent(event)
 
-# Проверка: запущен ли скрипт напрямую (а не импортирован как модуль в другой файл)
 if __name__ == "__main__":
-    
-    # 1. Создаем главный объект приложения Qt, передавая системные аргументы
     app = QApplication(sys.argv)
-    
-    # 2. Инициализируем наш класс главного меню (создаем окно в памяти)
     menu = MainMenu()
-    
-    # 3. Делаем созданное окно видимым на экране
     menu.show()
-    
-    # 4. Запускаем бесконечный цикл обработки событий Qt (клики, тачи, отрисовка).
-    # sys.exit гарантирует, что когда цикл завершится (окно закроется), скрипт корректно завершит работу.
     sys.exit(app.exec_())
-
-
-
-# ... здесь заканчиваются все методы класса MainMenu ...
-
-if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    
-    # Подключаем стили (QSS) к приложению...
-    app.setStyleSheet("""
-        # ... здесь находится весь ваш блок со стилями CSS ...
-    """)
-
-    # Инициализируем и запускаем окно (оставляем ОДИН такой блок)
-    window = MainMenu()
-    window.show()
-    sys.exit(app.exec_())
-
