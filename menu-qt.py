@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import (
     QToolButton,
     QVBoxLayout,
     QSizePolicy,
-    QScroller  # Добавили импорт для поддержки тачскрина
+    QScroller  
 )
 import gi
 gi.require_version("Gio", "2.0")
@@ -22,9 +22,23 @@ class MainMenu(QWidget):
     def __init__(self):
         super().__init__()
 
-        # 1. Настройки окна для Xorg + Тачскрин:
-        # Qt.Popup убирает рамки, делает окно поверх всех и закрывает его при клике мимо.
-        # Qt.X11BypassWindowManagerHint не дает оконному менеджеру вмешиваться в работу меню.
+        # 1. Получаем параметры текущего экрана для адаптивности
+        desktop = QApplication.desktop()
+        current_screen = desktop.screenNumber(desktop.cursor().pos())
+        screen_geometry = desktop.screenGeometry(current_screen)
+        
+        screen_width = screen_geometry.width()
+        screen_height = screen_geometry.height()
+
+        # Вычисляем динамические размеры (75% ширины, 80% высоты)
+        window_width = int(screen_width * 0.75)
+        window_height = int(screen_height * 0.80)
+
+        # Рассчитываем, сколько кнопок шириной 110px + отступы влезет в один ряд
+        # 40px закладываем на внутренние margins и скролл
+        self.max_columns = max(3, (window_width - 40) // 122)
+
+        # 2. Настройки окна для Xorg + Тачскрин
         self.setWindowFlags(
             Qt.Popup |
             Qt.X11BypassWindowManagerHint |
@@ -33,7 +47,7 @@ class MainMenu(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setFocusPolicy(Qt.StrongFocus)
 
-        # 2. Стилизация через QSS (сделали фон чуть темнее, чтобы на тачскрине было лучше видно)
+        # 3. Стилизация через QSS 
         self.setStyleSheet("""
             QWidget#MainWindow {
                 background-color: rgba(0, 0, 0, 0.75);
@@ -77,18 +91,20 @@ class MainMenu(QWidget):
         title.setStyleSheet("font-size: 16px;")
         outer_layout.addWidget(title)
 
-        # Прокрутка (ScrolledWindow)
+        # Прокрутка (ScrolledWindow) с адаптивным размером
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setFixedSize(1000, 620)
         
-        # ОТКЛЮЧАЕМ ПОЛОСЫ ПРОКРУТКИ (они больше не нужны, так как листаем пальцем)
+        # Высота скролла — это высота окна минус заголовок и отступы (~60px)
+        scroll.setFixedSize(window_width - 24, window_height - 60)
+        
+        # Отключаем полосы прокрутки
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         
         outer_layout.addWidget(scroll)
 
-        # ВКЛЮЧАЕМ КИНЕТИЧЕСКИЙ СКРОЛЛИНГ ПАЛЬЦЕМ
+        # Включаем кинетический скроллинг пальцем
         QScroller.grabGesture(scroll.viewport(), QScroller.LeftMouseButtonGesture)
 
         # Контейнер для сетки
@@ -106,20 +122,34 @@ class MainMenu(QWidget):
         # Загрузка приложений
         self.load_applications()
 
-        # Центрирование окна на экране
-        self.adjustSize()
-        self.center_on_screen()
+        # Центрирование и применение размеров
+        self.resize(window_width, window_height)
+        self.center_on_screen(screen_geometry)
 
     def load_applications(self):
-        apps = [app for app in Gio.AppInfo.get_all() if app.should_show()]
-        apps.sort(key=lambda a: a.get_display_name().lower())
+        raw_apps = [app for app in Gio.AppInfo.get_all() if app.should_show()]
+        filtered_apps = []
 
-        max_columns = 8
+        for app in raw_apps:
+            app_categories = app.get_categories() or ""
+            cats = [c.strip() for c in app_categories.split(";") if c.strip()]
+
+            if "Screensaver" in cats or "X-GNOME-Screensaver" in cats:
+                continue
+
+            if hasattr(app, "get_id") and app.get_id() and "app-install" in app.get_id():
+                continue
+            if hasattr(app, "get_filename") and app.get_filename() and "app-install" in app.get_filename():
+                continue
+
+            filtered_apps.append(app)
+
+        filtered_apps.sort(key=lambda a: a.get_display_name().lower())
         
-        for index, app in enumerate(apps):
+        for index, app in enumerate(filtered_apps):
             button = self.create_button(app)
-            row = index // max_columns
-            col = index % max_columns
+            row = index // self.max_columns
+            col = index % self.max_columns
             self.grid_layout.addWidget(button, row, col)
 
     def create_button(self, app):
@@ -153,20 +183,17 @@ class MainMenu(QWidget):
             print(f"Не удалось запустить приложение: {error}")
         self.close()
 
-    def center_on_screen(self):
+    def center_on_screen(self, screen_geometry):
         frame_gm = self.frameGeometry()
-        screen = QApplication.desktop().screenNumber(QApplication.desktop().cursor().pos())
-        center_point = QApplication.desktop().screenGeometry(screen).center()
+        center_point = screen_geometry.center()
         frame_gm.moveCenter(center_point)
         self.move(frame_gm.topLeft())
 
-    # --- Обработка событий фокуса и клавиш ---
     def showEvent(self, event):
         super().showEvent(event)
         self.activateWindow()
         self.raise_()
         self.setFocus()
-        # grabMouse() и grabKeyboard() удалены, так как они ломали клики и тачскрин
 
     def keyPressEvent(self, event: QKeyEvent):
         if event.key() == Qt.Key_Escape:
@@ -181,4 +208,3 @@ if __name__ == "__main__":
     menu = MainMenu()
     menu.show()
     sys.exit(app.exec_())
-
